@@ -1,0 +1,322 @@
+package de.kempmobil.billing
+
+import android.app.Activity
+import android.content.Context
+import com.android.billingclient.api.*
+import com.android.billingclient.api.Purchase.PurchaseState.PENDING
+import com.android.billingclient.api.Purchase.PurchaseState.PURCHASED
+import kotlinx.coroutines.*
+import timber.log.Timber
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+
+@Suppress("unused")
+class BillingFacade(
+    context: Context,
+    private val billingState: BillingStateAdapter,
+    private val skuName: String,
+    private val base64PublicKey: String,
+    private val scope: CoroutineScope
+) : BillingClientStateListener, PurchasesUpdatedListener, PurchasesResponseListener {
+
+    var fullVersionPurchase: Purchase? = null
+        private set
+
+    /**
+     * Determines whether a purchase can be launched.
+     */
+    val isReady: Boolean
+        get() {
+            return if (billingClient.isReady && fullVersionDetails != null) {
+                true
+            } else {
+                start()
+                Timber.e(RuntimeException(), "Billing client not available, is ready: %b, sku details: <%s>",
+                    billingClient.isReady, fullVersionDetails)
+                false
+            }
+        }
+
+    val price: String?
+        get() = fullVersionDetails?.price
+
+    var purchaseListener: PurchaseListener? = null
+
+    private val billingClient = BillingClient.newBuilder(context)
+        .setListener(this)
+        .enablePendingPurchases()
+        .build()
+
+    private var fullVersionDetails: SkuDetails? = null
+
+    private val isStarting = AtomicBoolean(false)
+
+    private val maxRetry = TimeUnit.MINUTES.toMillis(5)
+
+    private var retryDelay = 1000L
+
+    fun start() {
+        if (!billingClient.isReady && isStarting.compareAndSet(false, true)) {
+            Timber.d("Starting billing client connection...")
+            billingClient.startConnection(this)
+        }
+    }
+
+    /**
+     * Must be called in `Activity#onResume()`, see also
+     * https://developer.android.com/google/play/billing/integrate#pending
+     */
+    fun onResume() {
+        queryPurchases()
+    }
+
+    /**
+     * Must be called in `Activity#onCreate()`, see also
+     * https://developer.android.com/google/play/billing/integrate#pending
+     */
+    fun onCreate() {
+        queryPurchases()
+    }
+
+    fun purchaseFullVersion(activity: Activity) {
+        fullVersionDetails?.let { details ->
+            if (billingClient.isReady) {
+                val params = BillingFlowParams.newBuilder()
+                    .setSkuDetails(details)
+                    .build()
+                val result = billingClient.launchBillingFlow(activity, params)
+
+                if (result.responseCode == BillingClient.BillingResponseCode.ITEM_ALREADY_OWNED) {
+                    queryPurchases()
+                } else if (result.responseCode != BillingClient.BillingResponseCode.OK) {
+                    Timber.e("Error launching billing flow: %s (%s)", result.responseCodeString(), result.debugMessage)
+                }
+            } else {
+                Timber.e("Cannot launch purchaseFullVersion(), because client is not ready")
+            }
+        } ?: run {
+            Timber.e("Cannot launch purchaseFullVersion(), because SkuDetails is null")
+        }
+    }
+
+    /**
+     * Consumes/revokes a purchased product for testing purposes.
+     */
+    fun consumePurchase() {
+        if (billingClient.isReady) {
+            fullVersionPurchase?.let { purchase ->
+                scope.launch {
+                    val params = ConsumeParams.newBuilder()
+                        .setPurchaseToken(purchase.purchaseToken)
+                        .build()
+                    val (billingResult, token) = withContext(Dispatchers.IO) {
+                        billingClient.consumePurchase(params)
+                    }
+                    Timber.i("Product with token <%s> has been consumed/revoked: %s", token, billingResult.responseCodeString())
+                    fullVersionPurchase = null
+                    billingState.state = BillingState.AD_VERSION
+                    // Just to avoid missing sku details:
+                    querySkuDetails()
+                }
+            }
+        } else {
+            Timber.w("Unable to consume purchase, client=%s, purchase=%s", billingClient, fullVersionPurchase)
+        }
+    }
+
+    // -------------------------------------------------------------------------------
+    // BillingClientStateListener, PurchasesUpdatedListener, PurchasesResponseListener
+    // -------------------------------------------------------------------------------
+
+    override fun onBillingSetupFinished(result: BillingResult) {
+        Timber.d("Billing setup finished with result: '%s' (%s)", result.responseCodeString(), result.debugMessage)
+        isStarting.set(false)
+
+        if (result.responseCode == BillingClient.BillingResponseCode.OK) {
+            retryDelay = 1000L
+            queryPurchases()
+            if (billingState.state != BillingState.FULL_VERSION) {
+                scope.launch {
+                    querySkuDetails()
+                }
+            }
+        } else {
+            retryDelayed()
+        }
+    }
+
+    override fun onBillingServiceDisconnected() {
+        Timber.w("Billing service got disconnected!")
+        retryDelayed()
+    }
+
+    override fun onQueryPurchasesResponse(result: BillingResult, purchases: List<Purchase>) {
+        this.fullVersionPurchase = null
+
+        if (result.responseCode == BillingClient.BillingResponseCode.OK) {
+            for (purchase in purchases) {
+                if (purchase.hasFullVersionSku(skuName)) {
+                    Timber.d("Found purchase '%s'", purchase)
+                    checkUnacknowledgedPurchase(purchase)
+
+                    this.fullVersionPurchase = purchase
+                    break
+                }
+            }
+        }
+        billingState.state = if (fullVersionPurchase != null) BillingState.FULL_VERSION else BillingState.AD_VERSION
+    }
+
+    override fun onPurchasesUpdated(result: BillingResult, purchases: List<Purchase>?) {
+        Timber.d("Billing purchases updated with result: '%s', purchases=%s", result.responseCodeString(), purchases)
+
+        val responseCode = result.responseCode
+        if (responseCode == BillingClient.BillingResponseCode.OK) {
+            if (purchases != null) {
+                handlePurchases(purchases)
+            } else {
+                Timber.e("Received purchase updated callback with empty purchase list")
+            }
+        } else if (responseCode == BillingClient.BillingResponseCode.ITEM_ALREADY_OWNED) {
+            queryPurchases()
+        } else if (responseCode == BillingClient.BillingResponseCode.USER_CANCELED) {
+            Timber.i("Purchase canceled by user")
+        } else if (responseCode == BillingClient.BillingResponseCode.SERVICE_UNAVAILABLE) {
+            Timber.w("Error purchasing full version: %s (%s), network not available", result.responseCodeString(), result.debugMessage)
+        } else {
+            Timber.e("Error purchasing full version: %s (%s), purchases=%s", result.responseCodeString(), result.debugMessage, purchases)
+        }
+    }
+
+    private suspend fun querySkuDetails() {
+        if (billingClient.isReady) {
+            val params = SkuDetailsParams.newBuilder()
+                .setSkusList(listOf(skuName))
+                .setType(BillingClient.SkuType.INAPP)
+                .build()
+
+            val (billingResult: BillingResult, skuDetailsList: List<SkuDetails>?) = withContext(
+                Dispatchers.IO) {
+                billingClient.querySkuDetails(params)
+            }
+
+            Timber.d("Sku details response: %s: details=%s", billingResult.debugMessage, skuDetailsList)
+
+            if (billingResult.responseCode == BillingClient.BillingResponseCode.OK && skuDetailsList != null) {
+                for (skuDetails in skuDetailsList) {
+                    if (skuName == skuDetails.sku) {
+                        fullVersionDetails = skuDetails
+                        Timber.d("Full version details: sku=%s, title=%s, description=%s, price=%s, amount=%d",
+                            skuDetails.sku,
+                            skuDetails.title,
+                            skuDetails.description,
+                            skuDetails.price,
+                            skuDetails.priceAmountMicros)
+                        break
+                    }
+                }
+                if (fullVersionDetails == null) {
+                    Timber.e("Failed to retrieve right sku details from <%s>", skuDetailsList)
+                }
+            } else {
+                Timber.e("Failed to retrieve sku details, reason=%s, list=%s, message=%s",
+                    billingResult.debugMessage, skuDetailsList, billingResult.debugMessage)
+            }
+        }
+    }
+
+    private fun queryPurchases() {
+        if (billingClient.isReady) {
+            billingClient.queryPurchasesAsync(BillingClient.SkuType.INAPP, this)
+        } else {
+            Timber.d("Cannot start queryPurchasesAsync() because billing client is not ready yet")
+            start()
+        }
+    }
+
+    private fun handlePurchases(purchases: List<Purchase>) {
+        for (purchase in purchases) {
+            Timber.d("Handling purchase %s with state: %s", purchase.skus, purchase.purchaseState)
+
+            if (purchase.purchaseState == PENDING) {
+                Timber.i("Purchase in state PENDING, waiting before granting entitlement")
+            } else if (purchase.purchaseState == PURCHASED && purchase.hasFullVersionSku(skuName) && verifyPurchase(purchase)) {
+                fullVersionPurchase = purchase
+                billingState.state = BillingState.FULL_VERSION
+
+                // New in billing client version 2.x must acknowledge purchase!!!
+                checkUnacknowledgedPurchase(purchase)
+
+                purchaseListener?.purchaseCompleted()
+                break
+            }
+        }
+    }
+
+    private fun checkUnacknowledgedPurchase(purchase: Purchase) {
+        if (!purchase.isAcknowledged) {
+            scope.launch {
+                val params = AcknowledgePurchaseParams.newBuilder()
+                    .setPurchaseToken(purchase.purchaseToken)
+                    .build()
+
+                val ackPurchaseResult = withContext(Dispatchers.IO) {
+                    billingClient.acknowledgePurchase(params)
+                }
+
+                if (ackPurchaseResult.responseCode == BillingClient.BillingResponseCode.OK) {
+                    Timber.i("Successfully acknowledged purchase")
+                } else {
+                    Timber.e("Unable to acknowledge purchase: %s (%s)", ackPurchaseResult.responseCodeString(), ackPurchaseResult.debugMessage)
+                }
+            }
+        } else {
+            Timber.d("Purchase %s already acknowledged, skipping acknowledgePurchase()", purchase)
+        }
+    }
+
+    private fun verifyPurchase(purchase: Purchase): Boolean {
+        val isValid = verifyPurchase(base64PublicKey, purchase.originalJson, purchase.signature)
+        Timber.d("Purchase is valid=%b", isValid)
+        if (!isValid) {
+            Timber.e("Failed to verify purchase <%s>", purchase)
+        }
+        return isValid
+    }
+
+    private fun retryDelayed() {
+        scope.launch {
+            Timber.d("Restarting billing client after %dms...", retryDelay)
+            delay(retryDelay)
+            retryDelay = (2 * retryDelay).coerceAtMost(maxRetry)
+            start()
+        }
+    }
+}
+
+private fun Purchase.hasFullVersionSku(skuName: String): Boolean {
+    skus.forEach { sku ->
+        if (sku.equals(skuName)) {
+            return true
+        }
+    }
+    return false
+}
+
+private fun BillingResult.responseCodeString(): String {
+    return when (responseCode) {
+        BillingClient.BillingResponseCode.OK -> "OK"
+        BillingClient.BillingResponseCode.BILLING_UNAVAILABLE -> "BILLING_UNAVAILABLE"
+        BillingClient.BillingResponseCode.DEVELOPER_ERROR -> "DEVELOPER_ERROR"
+        BillingClient.BillingResponseCode.ERROR -> "ERROR"
+        BillingClient.BillingResponseCode.FEATURE_NOT_SUPPORTED -> "FEATURE_NOT_SUPPORTED"
+        BillingClient.BillingResponseCode.ITEM_ALREADY_OWNED -> "ITEM_ALREADY_OWNED"
+        BillingClient.BillingResponseCode.ITEM_NOT_OWNED -> "ITEM_NOT_OWNED"
+        BillingClient.BillingResponseCode.ITEM_UNAVAILABLE -> "ITEM_UNAVAILABLE"
+        BillingClient.BillingResponseCode.SERVICE_DISCONNECTED -> "SERVICE_DISCONNECTED"
+        BillingClient.BillingResponseCode.SERVICE_UNAVAILABLE -> "SERVICE_UNAVAILABLE"
+        BillingClient.BillingResponseCode.SERVICE_TIMEOUT -> "SERVICE_TIMEOUT"
+        BillingClient.BillingResponseCode.USER_CANCELED -> "USER_CANCELED"
+        else -> "UNKNOWN (${responseCode})"
+    }
+}
