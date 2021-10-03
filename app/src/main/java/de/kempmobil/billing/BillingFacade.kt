@@ -55,6 +55,7 @@ class BillingFacade(
 
     private var retryDelay = 1000L
 
+    @Suppress("MemberVisibilityCanBePrivate")
     fun start() {
         if (!billingClient.isReady && isStarting.compareAndSet(false, true)) {
             Timber.d("Starting billing client connection...")
@@ -139,6 +140,8 @@ class BillingFacade(
                 scope.launch {
                     querySkuDetails()
                 }
+            } else {
+                Timber.i("Skipping query for SKU details, as this is already the FULL_VERSION")
             }
         } else {
             retryDelayed()
@@ -189,6 +192,7 @@ class BillingFacade(
     }
 
     private suspend fun querySkuDetails() {
+        Timber.d("Starting query of SKU details now...")
         if (billingClient.isReady) {
             val params = SkuDetailsParams.newBuilder()
                 .setSkusList(listOf(skuName))
@@ -227,6 +231,7 @@ class BillingFacade(
 
     private fun queryPurchases() {
         if (billingClient.isReady) {
+            Timber.d("Starting query purchases now...")
             billingClient.queryPurchasesAsync(BillingClient.SkuType.INAPP, this)
         } else {
             Timber.d("Cannot start queryPurchasesAsync() because billing client is not ready yet")

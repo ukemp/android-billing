@@ -6,7 +6,7 @@ plugins {
 
 def versionMajor = 4
 def versionMinor = 0
-def versionPatch = 3
+def versionPatch = 4
 
 android {
     compileSdk 31
@@ -49,6 +49,11 @@ dependencies {
     androidTestImplementation 'androidx.test.espresso:espresso-core:3.4.0'
 }
 
+task androidSourcesJar(type: Jar) {
+    archiveClassifier.set('sources')
+    from android.sourceSets.main.java.srcDirs
+}
+
 // Because the components are created only during the afterEvaluate phase, you must
 // configure your publications using the afterEvaluate() lifecycle method.
 afterEvaluate {
@@ -56,6 +61,7 @@ afterEvaluate {
         publications {
             release(MavenPublication) {
                 from components.release
+                artifact androidSourcesJar
                 groupId = 'de.kempmobil.android'
                 artifactId = 'billing'
                 version = "${versionMajor}.${versionMinor}.${versionPatch}"
