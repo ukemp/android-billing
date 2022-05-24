@@ -14,12 +14,13 @@ import java.util.concurrent.atomic.AtomicBoolean
 class BillingFacade(
     context: Context,
     private val billingState: BillingStateAdapter,
-    private val skuName: String,
+    private val productId: String,
     private val base64PublicKey: String,
     private val scope: CoroutineScope,
     private val isOfferPersonalized: Boolean = false
 ) : BillingClientStateListener, PurchasesUpdatedListener, PurchasesResponseListener {
 
+    @Suppress("MemberVisibilityCanBePrivate")
     var fullVersionPurchase: Purchase? = null
         private set
 
@@ -32,15 +33,16 @@ class BillingFacade(
                 true
             } else {
                 start()
-                Timber.e(RuntimeException(), "Billing client not available, is ready: %b, sku details: <%s>",
+                Timber.e(RuntimeException(), "Billing client not available, is ready: %b, product details: <%s>",
                     billingClient.isReady, fullVersionDetails)
                 false
             }
         }
 
     val price: String?
-        get() = fullVersionDetails?.price
+        get() = fullVersionDetails?.oneTimePurchaseOfferDetails?.formattedPrice
 
+    @Suppress("MemberVisibilityCanBePrivate")
     var purchaseListener: PurchaseListener? = null
 
     private val billingClient = BillingClient.newBuilder(context)
@@ -48,7 +50,7 @@ class BillingFacade(
         .enablePendingPurchases()
         .build()
 
-    private var fullVersionDetails: SkuDetails? = null
+    private var fullVersionDetails: ProductDetails? = null
 
     private val isStarting = AtomicBoolean(false)
 
@@ -83,8 +85,11 @@ class BillingFacade(
     fun purchaseFullVersion(activity: Activity) {
         fullVersionDetails?.let { details ->
             if (billingClient.isReady) {
+                val productDetails = BillingFlowParams.ProductDetailsParams.newBuilder()
+                    .setProductDetails(details)
+                    .build()
                 val params = BillingFlowParams.newBuilder()
-                    .setSkuDetails(details)
+                    .setProductDetailsParamsList(listOf(productDetails))
                     .setIsOfferPersonalized(isOfferPersonalized)
                     .build()
                 val result = billingClient.launchBillingFlow(activity, params)
@@ -98,7 +103,7 @@ class BillingFacade(
                 Timber.e("Cannot launch purchaseFullVersion(), because client is not ready")
             }
         } ?: run {
-            Timber.e("Cannot launch purchaseFullVersion(), because SkuDetails is null")
+            Timber.e("Cannot launch purchaseFullVersion(), because ProductDetails is null")
         }
     }
 
@@ -118,8 +123,8 @@ class BillingFacade(
                     Timber.i("Product with token <%s> has been consumed/revoked: %s", token, billingResult.responseCodeString())
                     fullVersionPurchase = null
                     billingState.state = BillingState.AD_VERSION
-                    // Just to avoid missing sku details:
-                    querySkuDetails()
+                    // Just to avoid missing product details:
+                    queryProductDetails()
                 }
             }
         } else {
@@ -140,10 +145,10 @@ class BillingFacade(
             queryPurchases()
             if (billingState.state != BillingState.FULL_VERSION) {
                 scope.launch {
-                    querySkuDetails()
+                    queryProductDetails()
                 }
             } else {
-                Timber.i("Skipping query for SKU details, as this is already the FULL_VERSION")
+                Timber.i("Skipping query for product details, as this is already the FULL_VERSION")
             }
         } else {
             retryDelayed()
@@ -160,7 +165,7 @@ class BillingFacade(
 
         if (result.responseCode == BillingClient.BillingResponseCode.OK) {
             for (purchase in purchases) {
-                if (purchase.hasFullVersionSku(skuName)) {
+                if (purchase.hasFullVersionOf(productId)) {
                     Timber.d("Found purchase '%s'", purchase)
                     checkUnacknowledgedPurchase(purchase)
 
@@ -193,40 +198,41 @@ class BillingFacade(
         }
     }
 
-    private suspend fun querySkuDetails() {
-        Timber.d("Starting query of SKU details now...")
+    private suspend fun queryProductDetails() {
+        Timber.d("Starting query of product details now...")
         if (billingClient.isReady) {
-            val params = SkuDetailsParams.newBuilder()
-                .setSkusList(listOf(skuName))
-                .setType(BillingClient.SkuType.INAPP)
+            val product = QueryProductDetailsParams.Product.newBuilder()
+                .setProductId(productId)
+                .setProductType(BillingClient.ProductType.INAPP)
+                .build()
+            val params = QueryProductDetailsParams.newBuilder()
+                .setProductList(listOf(product))
                 .build()
 
-            val (billingResult: BillingResult, skuDetailsList: List<SkuDetails>?) = withContext(
-                Dispatchers.IO) {
-                billingClient.querySkuDetails(params)
+            val (billingResult: BillingResult, productDetailsList: List<ProductDetails>?) = withContext(Dispatchers.IO) {
+                billingClient.queryProductDetails(params)
             }
+            Timber.d("Product details response: %s: details=%s", billingResult.debugMessage, productDetailsList)
 
-            Timber.d("Sku details response: %s: details=%s", billingResult.debugMessage, skuDetailsList)
-
-            if (billingResult.responseCode == BillingClient.BillingResponseCode.OK && skuDetailsList != null) {
-                for (skuDetails in skuDetailsList) {
-                    if (skuName == skuDetails.sku) {
-                        fullVersionDetails = skuDetails
-                        Timber.d("Full version details: sku=%s, title=%s, description=%s, price=%s, amount=%d",
-                            skuDetails.sku,
-                            skuDetails.title,
-                            skuDetails.description,
-                            skuDetails.price,
-                            skuDetails.priceAmountMicros)
+            if (billingResult.responseCode == BillingClient.BillingResponseCode.OK && productDetailsList != null) {
+                for (productDetails in productDetailsList) {
+                    if (productId == productDetails.productId) {
+                        fullVersionDetails = productDetails
+                        Timber.d("Full version details: id=%s, title=%s, description=%s, price=%s, amount=%d",
+                            productDetails.productId,
+                            productDetails.title,
+                            productDetails.description,
+                            productDetails.oneTimePurchaseOfferDetails?.formattedPrice,
+                            productDetails.oneTimePurchaseOfferDetails?.priceAmountMicros)
                         break
                     }
                 }
                 if (fullVersionDetails == null) {
-                    Timber.e("Failed to retrieve right sku details from <%s>", skuDetailsList)
+                    Timber.e("Failed to retrieve right product details from <%s>", productDetailsList)
                 }
             } else {
-                Timber.e("Failed to retrieve sku details, reason=%s, list=%s, message=%s",
-                    billingResult.debugMessage, skuDetailsList, billingResult.debugMessage)
+                Timber.e("Failed to retrieve product details, reason=%s, list=%s, message=%s",
+                    billingResult.debugMessage, productDetailsList, billingResult.debugMessage)
             }
         }
     }
@@ -234,7 +240,10 @@ class BillingFacade(
     private fun queryPurchases() {
         if (billingClient.isReady) {
             Timber.d("Starting query purchases now...")
-            billingClient.queryPurchasesAsync(BillingClient.SkuType.INAPP, this)
+            val params = QueryPurchasesParams.newBuilder()
+                .setProductType(BillingClient.ProductType.INAPP)
+                .build()
+            billingClient.queryPurchasesAsync(params, this)
         } else {
             Timber.d("Cannot start queryPurchasesAsync() because billing client is not ready yet")
             start()
@@ -243,11 +252,11 @@ class BillingFacade(
 
     private fun handlePurchases(purchases: List<Purchase>) {
         for (purchase in purchases) {
-            Timber.d("Handling purchase %s with state: %s", purchase.skus, purchase.purchaseState)
+            Timber.d("Handling purchase %s with state: %s", purchase.products, purchase.purchaseState)
 
             if (purchase.purchaseState == PENDING) {
                 Timber.i("Purchase in state PENDING, waiting before granting entitlement")
-            } else if (purchase.purchaseState == PURCHASED && purchase.hasFullVersionSku(skuName) && verifyPurchase(purchase)) {
+            } else if (purchase.purchaseState == PURCHASED && purchase.hasFullVersionOf(productId) && verifyPurchase(purchase)) {
                 fullVersionPurchase = purchase
                 billingState.state = BillingState.FULL_VERSION
 
@@ -301,13 +310,8 @@ class BillingFacade(
     }
 }
 
-private fun Purchase.hasFullVersionSku(skuName: String): Boolean {
-    skus.forEach { sku ->
-        if (sku.equals(skuName)) {
-            return true
-        }
-    }
-    return false
+private fun Purchase.hasFullVersionOf(productId: String): Boolean {
+    return products.find { it == productId } != null
 }
 
 private fun BillingResult.responseCodeString(): String {
