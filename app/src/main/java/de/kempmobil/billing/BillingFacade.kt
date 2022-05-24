@@ -16,7 +16,8 @@ class BillingFacade(
     private val billingState: BillingStateAdapter,
     private val skuName: String,
     private val base64PublicKey: String,
-    private val scope: CoroutineScope
+    private val scope: CoroutineScope,
+    private val isOfferPersonalized: Boolean = false
 ) : BillingClientStateListener, PurchasesUpdatedListener, PurchasesResponseListener {
 
     var fullVersionPurchase: Purchase? = null
@@ -84,6 +85,7 @@ class BillingFacade(
             if (billingClient.isReady) {
                 val params = BillingFlowParams.newBuilder()
                     .setSkuDetails(details)
+                    .setIsOfferPersonalized(isOfferPersonalized)
                     .build()
                 val result = billingClient.launchBillingFlow(activity, params)
 
