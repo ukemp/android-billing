@@ -192,7 +192,9 @@ class BillingFacade(
         } else if (responseCode == BillingClient.BillingResponseCode.USER_CANCELED) {
             Timber.i("Purchase canceled by user")
         } else if (responseCode == BillingClient.BillingResponseCode.SERVICE_UNAVAILABLE) {
-            Timber.w("Error purchasing full version: %s (%s), network not available", result.responseCodeString(), result.debugMessage)
+            Timber.w("Error purchasing full version: %s (%s), service not available", result.responseCodeString(), result.debugMessage)
+        } else if (responseCode == BillingClient.BillingResponseCode.NETWORK_ERROR) {
+            Timber.w("Error purchasing full version: %s (%s), network error", result.responseCodeString(), result.debugMessage)
         } else {
             Timber.e("Error purchasing full version: %s (%s), purchases=%s", result.responseCodeString(), result.debugMessage, purchases)
         }
@@ -326,7 +328,7 @@ private fun BillingResult.responseCodeString(): String {
         BillingClient.BillingResponseCode.ITEM_UNAVAILABLE -> "ITEM_UNAVAILABLE"
         BillingClient.BillingResponseCode.SERVICE_DISCONNECTED -> "SERVICE_DISCONNECTED"
         BillingClient.BillingResponseCode.SERVICE_UNAVAILABLE -> "SERVICE_UNAVAILABLE"
-        BillingClient.BillingResponseCode.SERVICE_TIMEOUT -> "SERVICE_TIMEOUT"
+        BillingClient.BillingResponseCode.NETWORK_ERROR -> "NETWORK_ERROR"
         BillingClient.BillingResponseCode.USER_CANCELED -> "USER_CANCELED"
         else -> "UNKNOWN (${responseCode})"
     }
