@@ -9,7 +9,7 @@ enum class BillingState(val value: Int) {
     companion object {
 
         fun from(id: Int): BillingState {
-            values().forEach { appState ->
+            entries.forEach { appState ->
                 if (appState.value == id) {
                     return appState
                 }

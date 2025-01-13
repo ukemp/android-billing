@@ -2,10 +2,29 @@ package de.kempmobil.billing
 
 import android.app.Activity
 import android.content.Context
-import com.android.billingclient.api.*
+import com.android.billingclient.api.AcknowledgePurchaseParams
+import com.android.billingclient.api.BillingClient
+import com.android.billingclient.api.BillingClientStateListener
+import com.android.billingclient.api.BillingFlowParams
+import com.android.billingclient.api.BillingResult
+import com.android.billingclient.api.ConsumeParams
+import com.android.billingclient.api.PendingPurchasesParams
+import com.android.billingclient.api.ProductDetails
+import com.android.billingclient.api.Purchase
 import com.android.billingclient.api.Purchase.PurchaseState.PENDING
 import com.android.billingclient.api.Purchase.PurchaseState.PURCHASED
-import kotlinx.coroutines.*
+import com.android.billingclient.api.PurchasesResponseListener
+import com.android.billingclient.api.PurchasesUpdatedListener
+import com.android.billingclient.api.QueryProductDetailsParams
+import com.android.billingclient.api.QueryPurchasesParams
+import com.android.billingclient.api.acknowledgePurchase
+import com.android.billingclient.api.consumePurchase
+import com.android.billingclient.api.queryProductDetails
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import timber.log.Timber
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -33,8 +52,11 @@ class BillingFacade(
                 true
             } else {
                 start()
-                Timber.e(RuntimeException(), "Billing client not available, is ready: %b, product details: <%s>",
-                    billingClient.isReady, fullVersionDetails)
+                Timber.e(
+                    RuntimeException(),
+                    "Billing client not available, is ready: %b, product details: <%s>",
+                    billingClient.isReady, fullVersionDetails
+                )
                 false
             }
         }
@@ -47,7 +69,7 @@ class BillingFacade(
 
     private val billingClient = BillingClient.newBuilder(context)
         .setListener(this)
-        .enablePendingPurchases()
+        .enablePendingPurchases(PendingPurchasesParams.newBuilder().enableOneTimeProducts().build())
         .build()
 
     private var fullVersionDetails: ProductDetails? = null
@@ -97,7 +119,10 @@ class BillingFacade(
                 if (result.responseCode == BillingClient.BillingResponseCode.ITEM_ALREADY_OWNED) {
                     queryPurchases()
                 } else if (result.responseCode != BillingClient.BillingResponseCode.OK) {
-                    Timber.e("Error launching billing flow: %s (%s)", result.responseCodeString(), result.debugMessage)
+                    Timber.e(
+                        "Error launching billing flow: %s (%s)",
+                        result.responseCodeString(), result.debugMessage
+                    )
                 }
             } else {
                 Timber.e("Cannot launch purchaseFullVersion(), because client is not ready")
@@ -120,7 +145,10 @@ class BillingFacade(
                     val (billingResult, token) = withContext(Dispatchers.IO) {
                         billingClient.consumePurchase(params)
                     }
-                    Timber.i("Product with token <%s> has been consumed/revoked: %s", token, billingResult.responseCodeString())
+                    Timber.i(
+                        "Product with token <%s> has been consumed/revoked: %s",
+                        token, billingResult.responseCodeString()
+                    )
                     fullVersionPurchase = null
                     billingState.state = BillingState.AD_VERSION
                     // Just to avoid missing product details:
@@ -128,7 +156,10 @@ class BillingFacade(
                 }
             }
         } else {
-            Timber.w("Unable to consume purchase, client=%s, purchase=%s", billingClient, fullVersionPurchase)
+            Timber.w(
+                "Unable to consume purchase, client=%s, purchase=%s",
+                billingClient, fullVersionPurchase
+            )
         }
     }
 
@@ -137,7 +168,10 @@ class BillingFacade(
     // -------------------------------------------------------------------------------
 
     override fun onBillingSetupFinished(result: BillingResult) {
-        Timber.d("Billing setup finished with result: '%s' (%s)", result.responseCodeString(), result.debugMessage)
+        Timber.d(
+            "Billing setup finished with result: '%s' (%s)",
+            result.responseCodeString(), result.debugMessage
+        )
         isStarting.set(false)
 
         if (result.responseCode == BillingClient.BillingResponseCode.OK) {
@@ -174,11 +208,15 @@ class BillingFacade(
                 }
             }
         }
-        billingState.state = if (fullVersionPurchase != null) BillingState.FULL_VERSION else BillingState.AD_VERSION
+        billingState.state =
+            if (fullVersionPurchase != null) BillingState.FULL_VERSION else BillingState.AD_VERSION
     }
 
     override fun onPurchasesUpdated(result: BillingResult, purchases: List<Purchase>?) {
-        Timber.d("Billing purchases updated with result: '%s', purchases=%s", result.responseCodeString(), purchases)
+        Timber.d(
+            "Billing purchases updated with result: '%s', purchases=%s",
+            result.responseCodeString(), purchases
+        )
 
         val responseCode = result.responseCode
         if (responseCode == BillingClient.BillingResponseCode.OK) {
@@ -192,11 +230,20 @@ class BillingFacade(
         } else if (responseCode == BillingClient.BillingResponseCode.USER_CANCELED) {
             Timber.i("Purchase canceled by user")
         } else if (responseCode == BillingClient.BillingResponseCode.SERVICE_UNAVAILABLE) {
-            Timber.w("Error purchasing full version: %s (%s), service not available", result.responseCodeString(), result.debugMessage)
+            Timber.w(
+                "Error purchasing full version: %s (%s), service not available",
+                result.responseCodeString(), result.debugMessage
+            )
         } else if (responseCode == BillingClient.BillingResponseCode.NETWORK_ERROR) {
-            Timber.w("Error purchasing full version: %s (%s), network error", result.responseCodeString(), result.debugMessage)
+            Timber.w(
+                "Error purchasing full version: %s (%s), network error",
+                result.responseCodeString(), result.debugMessage
+            )
         } else {
-            Timber.e("Error purchasing full version: %s (%s), purchases=%s", result.responseCodeString(), result.debugMessage, purchases)
+            Timber.e(
+                "Error purchasing full version: %s (%s), purchases=%s",
+                result.responseCodeString(), result.debugMessage, purchases
+            )
         }
     }
 
@@ -211,30 +258,40 @@ class BillingFacade(
                 .setProductList(listOf(product))
                 .build()
 
-            val (billingResult: BillingResult, productDetailsList: List<ProductDetails>?) = withContext(Dispatchers.IO) {
+            val (billingResult, productDetailsList) = withContext(Dispatchers.IO) {
                 billingClient.queryProductDetails(params)
             }
-            Timber.d("Product details response: %s: details=%s", billingResult.debugMessage, productDetailsList)
+            Timber.d(
+                "Product details response: %s: details=%s",
+                billingResult.debugMessage, productDetailsList
+            )
 
             if (billingResult.responseCode == BillingClient.BillingResponseCode.OK && productDetailsList != null) {
                 for (productDetails in productDetailsList) {
                     if (productId == productDetails.productId) {
                         fullVersionDetails = productDetails
-                        Timber.d("Full version details: id=%s, title=%s, description=%s, price=%s, amount=%d",
+                        Timber.d(
+                            "Full version details: id=%s, title=%s, description=%s, price=%s, amount=%d",
                             productDetails.productId,
                             productDetails.title,
                             productDetails.description,
                             productDetails.oneTimePurchaseOfferDetails?.formattedPrice,
-                            productDetails.oneTimePurchaseOfferDetails?.priceAmountMicros)
+                            productDetails.oneTimePurchaseOfferDetails?.priceAmountMicros
+                        )
                         break
                     }
                 }
                 if (fullVersionDetails == null) {
-                    Timber.e("Failed to retrieve right product details from <%s>", productDetailsList)
+                    Timber.e(
+                        "Failed to retrieve right product details from <%s>",
+                        productDetailsList
+                    )
                 }
             } else {
-                Timber.e("Failed to retrieve product details, reason=%s, list=%s, message=%s",
-                    billingResult.debugMessage, productDetailsList, billingResult.debugMessage)
+                Timber.e(
+                    "Failed to retrieve product details, reason=%s, list=%s, message=%s",
+                    billingResult.debugMessage, productDetailsList, billingResult.debugMessage
+                )
             }
         }
     }
@@ -254,11 +311,17 @@ class BillingFacade(
 
     private fun handlePurchases(purchases: List<Purchase>) {
         for (purchase in purchases) {
-            Timber.d("Handling purchase %s with state: %s", purchase.products, purchase.purchaseState)
+            Timber.d(
+                "Handling purchase %s with state: %s",
+                purchase.products, purchase.purchaseState
+            )
 
             if (purchase.purchaseState == PENDING) {
                 Timber.i("Purchase in state PENDING, waiting before granting entitlement")
-            } else if (purchase.purchaseState == PURCHASED && purchase.hasFullVersionOf(productId) && verifyPurchase(purchase)) {
+            } else if (purchase.purchaseState == PURCHASED
+                && purchase.hasFullVersionOf(productId)
+                && verifyPurchase(purchase)
+            ) {
                 fullVersionPurchase = purchase
                 billingState.state = BillingState.FULL_VERSION
 
@@ -285,7 +348,10 @@ class BillingFacade(
                 if (ackPurchaseResult.responseCode == BillingClient.BillingResponseCode.OK) {
                     Timber.i("Successfully acknowledged purchase")
                 } else {
-                    Timber.e("Unable to acknowledge purchase: %s (%s)", ackPurchaseResult.responseCodeString(), ackPurchaseResult.debugMessage)
+                    Timber.e(
+                        "Unable to acknowledge purchase: %s (%s)",
+                        ackPurchaseResult.responseCodeString(), ackPurchaseResult.debugMessage
+                    )
                 }
             }
         } else {
