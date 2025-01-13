@@ -72,14 +72,11 @@ afterEvaluate {
         }
         repositories {
             maven {
-                url "https://gitlab.com/api/v4/projects/30012057/packages/maven"
+                url "https://maven.pkg.github.com/ukemp/billing"
                 name "Android Libraries"
-                credentials(HttpHeaderCredentials) {
-                    name = 'Deploy-Token'
-                    value = gitLabDeployToken
-                }
-                authentication {
-                    header(HttpHeaderAuthentication)
+                credentials {
+                    username = "ukemp"
+                    password = githubDeployToken
                 }
             }
         }
