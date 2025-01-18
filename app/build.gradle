@@ -72,7 +72,7 @@ afterEvaluate {
         }
         repositories {
             maven {
-                url "https://maven.pkg.github.com/ukemp/billing"
+                url "https://maven.pkg.github.com/ukemp/android-billing"
                 name "Android Libraries"
                 credentials {
                     username = "ukemp"

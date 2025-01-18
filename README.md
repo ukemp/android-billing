@@ -1,64 +1,46 @@
-# Download
+# Android Billing
 
-In `settings.gradle` of your project, add:
+A wrapper around the Android Billing Client SDK to allow in app, one time purchases of a single
+product (basically ad version of an app vs. purchased version). I use it in private projects, so its
+simplest to clone it.
 
-Groovy:
-```groovy
-dependencyResolutionManagement {
-    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
-    repositories {
-        google()
-        mavenCentral()
-        maven {
-            url "https://gitlab.com/api/v4/groups/13544180/-/packages/maven"
-            credentials(HttpHeaderCredentials) {
-                name = 'Deploy-Token'
-                value = gitLabDeployToken
-            }
-            authentication {
-                header(HttpHeaderAuthentication)
-            }
-        }
-    }
-}
-```
+The version of this library reflects the version of the billing client used. 
 
-Kotlin:
+# Usage
+
+Note to myself: to use this library, in `settings.gradle.kts` of the project, add:
+
 ```kotlin
+val githubDeployToken: String by settings
+
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
         google()
         mavenCentral()
         maven {
-            url = URI("https://gitlab.com/api/v4/groups/13544180/-/packages/maven")
-            credentials(HttpHeaderCredentials::class) {
-                name = "Deploy-Token"
-                value = gitLabDeployToken
-            }
-            authentication {
-                create<HttpHeaderAuthentication>("header")
+            url = URI("https://maven.pkg.github.com/ukemp/android-billing")
+            credentials {
+                username = "ukemp"
+                password = githubDeployToken
             }
         }
     }
 }
-
 ````
+
 and make sure that in the (global) `gradle.properties` the `gitLabDeployToken` is defined like this:
+
 ```groovy
-gitLabDeployToken=<...>
+githubDeployToken=<...>
 ```
 
-Then in `./app/build.gradle` add:
+Then in `./app/build.gradle.kts` add:
 
-```groovy
+```kotlin
 dependencies {
-    implementation "de.kempmobil.android:billing:5.0.0"
+    implementation("de.kempmobil.android:billing:7.1.1")
 }
 ```
-
-# Publishing
-See the README file in the [Setup project](https://gitlab.com/a4265/setup).
-
 
 
